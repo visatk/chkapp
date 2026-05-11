@@ -1,122 +1,603 @@
+import 'dart:async';
+import 'dart:math';
 import 'package:flutter/material.dart';
+import 'package:firebase_core/firebase_core.dart';
+import 'package:firebase_auth/firebase_auth.dart';
+import 'package:cloud_firestore/cloud_firestore.dart';
 
-void main() {
-  runApp(const MyApp());
+import 'firebase_options.dart';
+
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  try {
+    await Firebase.initializeApp(
+      options: DefaultFirebaseOptions.currentPlatform,
+    );
+  } catch (e) {
+    debugPrint('Firebase init error (ignoring for sandbox): $e');
+  }
+  runApp(const MockCheckerApp());
 }
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+class MockCheckerApp extends StatelessWidget {
+  const MockCheckerApp({super.key});
 
-  // This widget is the root of your application.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'Flutter Demo',
+      title: 'Mock Card Checker Pro',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        brightness: Brightness.dark,
+        primarySwatch: Colors.blueGrey,
+        scaffoldBackgroundColor: const Color(0xFF121212),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: Color(0xFF1E1E1E),
+          elevation: 0,
+        ),
+        elevatedButtonTheme: ElevatedButtonThemeData(
+          style: ElevatedButton.styleFrom(
+            backgroundColor: Colors.blueAccent,
+            foregroundColor: Colors.white,
+            shape: RoundedRectangleBorder(
+              borderRadius: BorderRadius.circular(8),
+            ),
+            padding: const EdgeInsets.symmetric(vertical: 16),
+          ),
+        ),
+        inputDecorationTheme: InputDecorationTheme(
+          filled: true,
+          fillColor: const Color(0xFF1E1E1E),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(8),
+            borderSide: BorderSide.none,
+          ),
+        ),
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
+      home: const AuthWrapper(),
     );
   }
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
-
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+// -----------------------------------------------------------------------------
+// AUTHENTICATION WRAPPER
+// -----------------------------------------------------------------------------
+class AuthWrapper extends StatelessWidget {
+  const AuthWrapper({super.key});
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
+  Widget build(BuildContext context) {
+    return StreamBuilder<User?>(
+      stream: FirebaseAuth.instance.authStateChanges(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Scaffold(body: Center(child: CircularProgressIndicator()));
+        }
+        if (snapshot.hasData && snapshot.data != null) {
+          return const MainDashboard();
+        }
+        return const LoginScreen();
+      },
+    );
+  }
 }
 
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+// -----------------------------------------------------------------------------
+// AUTHENTICATION SCREENS
+// -----------------------------------------------------------------------------
+class LoginScreen extends StatefulWidget {
+  const LoginScreen({super.key});
 
-  void _incrementCounter() {
+  @override
+  State<LoginScreen> createState() => _LoginScreenState();
+}
+
+class _LoginScreenState extends State<LoginScreen> {
+  final _emailController = TextEditingController(text: 'sandbox@example.com');
+  final _passwordController = TextEditingController(text: 'password123');
+  bool _isLoading = false;
+
+  Future<void> _login() async {
+    setState(() => _isLoading = true);
+    try {
+      await FirebaseAuth.instance.signInWithEmailAndPassword(
+        email: _emailController.text.trim(),
+        password: _passwordController.text.trim(),
+      );
+    } on FirebaseAuthException catch (e) {
+      if (e.code == 'user-not-found' || e.code == 'invalid-credential') {
+        // Auto-register for sandbox purposes
+        try {
+          await FirebaseAuth.instance.createUserWithEmailAndPassword(
+            email: _emailController.text.trim(),
+            password: _passwordController.text.trim(),
+          );
+        } catch (registerError) {
+          _showError(registerError.toString());
+        }
+      } else {
+        _showError(e.message ?? 'Authentication failed');
+      }
+    } catch (e) {
+      _showError(e.toString());
+    } finally {
+      if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  void _showError(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message), backgroundColor: Colors.redAccent));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: Center(
+        child: SingleChildScrollView(
+          padding: const EdgeInsets.all(24.0),
+          child: Container(
+            constraints: const BoxConstraints(maxWidth: 400),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                const Icon(Icons.security, size: 80, color: Colors.blueAccent),
+                const SizedBox(height: 24),
+                const Text(
+                  'Sandbox Checker Login',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
+                ),
+                const SizedBox(height: 32),
+                TextField(
+                  controller: _emailController,
+                  decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.email)),
+                  keyboardType: TextInputType.emailAddress,
+                ),
+                const SizedBox(height: 16),
+                TextField(
+                  controller: _passwordController,
+                  decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock)),
+                  obscureText: true,
+                ),
+                const SizedBox(height: 32),
+                ElevatedButton(
+                  onPressed: _isLoading ? null : _login,
+                  child: _isLoading 
+                    ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                    : const Text('Access Dashboard'),
+                ),
+                const SizedBox(height: 16),
+                const Text(
+                  'Using a sandbox account will automatically create it if it does not exist.',
+                  textAlign: TextAlign.center,
+                  style: TextStyle(color: Colors.grey, fontSize: 12),
+                )
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// MAIN DASHBOARD (NAVIGATION)
+// -----------------------------------------------------------------------------
+class MainDashboard extends StatefulWidget {
+  const MainDashboard({super.key});
+
+  @override
+  State<MainDashboard> createState() => _MainDashboardState();
+}
+
+class _MainDashboardState extends State<MainDashboard> {
+  int _currentIndex = 0;
+
+  final List<Widget> _pages = [
+    const CheckerScreen(),
+    const HistoryScreen(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Mock Card Checker Pro'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.logout),
+            onPressed: () => FirebaseAuth.instance.signOut(),
+          )
+        ],
+      ),
+      body: _pages[_currentIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _currentIndex,
+        onTap: (index) => setState(() => _currentIndex = index),
+        backgroundColor: const Color(0xFF1E1E1E),
+        selectedItemColor: Colors.blueAccent,
+        unselectedItemColor: Colors.grey,
+        items: const [
+          BottomNavigationBarItem(icon: Icon(Icons.check_circle_outline), label: 'Checker'),
+          BottomNavigationBarItem(icon: Icon(Icons.history), label: 'History'),
+        ],
+      ),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// MODELS & MOCK API
+// -----------------------------------------------------------------------------
+enum CardStatus { live, dead, unknown }
+
+class CardResult {
+  final String cardData;
+  final CardStatus status;
+  final String message;
+  final DateTime checkedAt;
+
+  CardResult({
+    required this.cardData,
+    required this.status,
+    required this.message,
+    required this.checkedAt,
+  });
+}
+
+class MockCheckerAPI {
+  static final Random _rnd = Random();
+
+  // Simulates an API call to a card checking gateway
+  static Future<CardResult> checkCard(String cardData) async {
+    // Artificial delay between 300ms and 1500ms
+    int delay = 300 + _rnd.nextInt(1200);
+    await Future.delayed(Duration(milliseconds: delay));
+
+    // Basic format validation simulation
+    if (cardData.length < 10) {
+      return CardResult(cardData: cardData, status: CardStatus.unknown, message: 'Invalid Format', checkedAt: DateTime.now());
+    }
+
+    // Determine status (20% Live, 75% Dead, 5% Unknown for realism)
+    int chance = _rnd.nextInt(100);
+    CardStatus status;
+    String message;
+
+    if (chance < 20) {
+      status = CardStatus.live;
+      message = 'Approved - CVV Match';
+    } else if (chance < 95) {
+      status = CardStatus.dead;
+      message = 'Declined - Insufficient Funds / Generic Decline';
+    } else {
+      status = CardStatus.unknown;
+      message = 'Gateway Error / Timeout';
+    }
+
+    return CardResult(
+      cardData: cardData,
+      status: status,
+      message: message,
+      checkedAt: DateTime.now(),
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// CHECKER SCREEN
+// -----------------------------------------------------------------------------
+class CheckerScreen extends StatefulWidget {
+  const CheckerScreen({super.key});
+
+  @override
+  State<CheckerScreen> createState() => _CheckerScreenState();
+}
+
+class _CheckerScreenState extends State<CheckerScreen> {
+  final TextEditingController _inputController = TextEditingController();
+  
+  bool _isRunning = false;
+  int _total = 0;
+  int _checked = 0;
+  int _live = 0;
+  int _dead = 0;
+  int _unknown = 0;
+
+  final List<CardResult> _results = [];
+  CancellationToken? _cancellationToken;
+
+  @override
+  void dispose() {
+    _inputController.dispose();
+    _cancellationToken?.cancel();
+    super.dispose();
+  }
+
+  void _startChecker() async {
+    final lines = _inputController.text
+        .split('\n')
+        .map((e) => e.trim())
+        .where((e) => e.isNotEmpty)
+        .toList();
+
+    if (lines.isEmpty) return;
+
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
+      _isRunning = true;
+      _total = lines.length;
+      _checked = 0;
+      _live = 0;
+      _dead = 0;
+      _unknown = 0;
+      _results.clear();
+      _cancellationToken = CancellationToken();
+    });
+
+    final User? user = FirebaseAuth.instance.currentUser;
+
+    for (int i = 0; i < lines.length; i++) {
+      if (_cancellationToken!.isCancelled) break;
+
+      final result = await MockCheckerAPI.checkCard(lines[i]);
+      
+      if (!mounted) return;
+
+      setState(() {
+        _checked++;
+        _results.insert(0, result); // Add to top of list
+        if (result.status == CardStatus.live) {
+          _live++;
+          // Save live hits to Firestore
+          if (user != null) {
+            FirebaseFirestore.instance.collection('users').doc(user.uid).collection('hits').add({
+              'cardData': result.cardData,
+              'message': result.message,
+              'checkedAt': FieldValue.serverTimestamp(),
+            }).catchError((e) => debugPrint('Firestore Error: $e'));
+          }
+        } else if (result.status == CardStatus.dead) {
+          _dead++;
+        } else {
+          _unknown++;
+        }
+      });
+    }
+
+    if (mounted) {
+      setState(() {
+        _isRunning = false;
+      });
+    }
+  }
+
+  void _stopChecker() {
+    _cancellationToken?.cancel();
+    setState(() {
+      _isRunning = false;
     });
   }
 
   @override
   Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
-      ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
-        child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: <Widget>[
-            const Text('You have pushed the button this many times:'),
-            Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+    return Padding(
+      padding: const EdgeInsets.all(16.0),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Input Area
+          Expanded(
+            flex: 2,
+            child: TextField(
+              controller: _inputController,
+              maxLines: null,
+              expands: true,
+              style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+              decoration: const InputDecoration(
+                hintText: 'Paste combos here... (Format: CARD|MM|YY|CVV)',
+                hintStyle: TextStyle(color: Colors.white30),
+              ),
+              enabled: !_isRunning,
             ),
-          ],
-        ),
+          ),
+          const SizedBox(height: 16),
+          
+          // Controls
+          Row(
+            children: [
+              Expanded(
+                child: ElevatedButton.icon(
+                  icon: Icon(_isRunning ? Icons.stop : Icons.play_arrow),
+                  label: Text(_isRunning ? 'Stop' : 'Start Checker'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: _isRunning ? Colors.redAccent : Colors.green,
+                  ),
+                  onPressed: _isRunning ? _stopChecker : _startChecker,
+                ),
+              ),
+              const SizedBox(width: 16),
+              OutlinedButton.icon(
+                icon: const Icon(Icons.clear),
+                label: const Text('Clear'),
+                onPressed: _isRunning ? null : () {
+                  _inputController.clear();
+                  setState(() {
+                    _results.clear();
+                    _total = _checked = _live = _dead = _unknown = 0;
+                  });
+                },
+              )
+            ],
+          ),
+          const SizedBox(height: 24),
+          
+          // Statistics
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _StatBadge(title: 'TOTAL', count: _total, color: Colors.blue),
+              _StatBadge(title: 'CHECKED', count: _checked, color: Colors.orange),
+              _StatBadge(title: 'LIVE', count: _live, color: Colors.green),
+              _StatBadge(title: 'DEAD', count: _dead, color: Colors.red),
+              _StatBadge(title: 'UNKNOWN', count: _unknown, color: Colors.grey),
+            ],
+          ),
+          
+          const SizedBox(height: 16),
+          if (_isRunning) LinearProgressIndicator(value: _total > 0 ? _checked / _total : 0),
+          const SizedBox(height: 16),
+          
+          // Results List
+          const Text('Live Results', style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const Divider(),
+          Expanded(
+            flex: 3,
+            child: ListView.builder(
+              itemCount: _results.length,
+              itemBuilder: (context, index) {
+                final res = _results[index];
+                Color statusColor;
+                IconData statusIcon;
+                
+                switch (res.status) {
+                  case CardStatus.live:
+                    statusColor = Colors.greenAccent;
+                    statusIcon = Icons.check_circle;
+                    break;
+                  case CardStatus.dead:
+                    statusColor = Colors.redAccent;
+                    statusIcon = Icons.cancel;
+                    break;
+                  case CardStatus.unknown:
+                  default:
+                    statusColor = Colors.grey;
+                    statusIcon = Icons.help_outline;
+                }
+
+                return Card(
+                  color: const Color(0xFF2C2C2C),
+                  margin: const EdgeInsets.only(bottom: 8),
+                  child: ListTile(
+                    leading: Icon(statusIcon, color: statusColor),
+                    title: Text(res.cardData, style: const TextStyle(fontFamily: 'monospace')),
+                    subtitle: Text(res.message, style: TextStyle(color: statusColor, fontSize: 12)),
+                    dense: true,
+                  ),
+                );
+              },
+            ),
+          )
+        ],
       ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
-      ), // This trailing comma makes auto-formatting nicer for build methods.
+    );
+  }
+}
+
+class CancellationToken {
+  bool _isCancelled = false;
+  bool get isCancelled => _isCancelled;
+  void cancel() => _isCancelled = true;
+}
+
+class _StatBadge extends StatelessWidget {
+  final String title;
+  final int count;
+  final Color color;
+
+  const _StatBadge({required this.title, required this.count, required this.color});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(title, style: const TextStyle(fontSize: 10, color: Colors.grey, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 4),
+        Container(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+          decoration: BoxDecoration(
+            color: color.withOpacity(0.2),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: color.withOpacity(0.5)),
+          ),
+          child: Text(
+            count.toString(),
+            style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 16),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// -----------------------------------------------------------------------------
+// HISTORY SCREEN
+// -----------------------------------------------------------------------------
+class HistoryScreen extends StatelessWidget {
+  const HistoryScreen({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      return const Center(child: Text('Not logged in'));
+    }
+
+    return StreamBuilder<QuerySnapshot>(
+      stream: FirebaseFirestore.instance
+          .collection('users')
+          .doc(user.uid)
+          .collection('hits')
+          .orderBy('checkedAt', descending: true)
+          .snapshots(),
+      builder: (context, snapshot) {
+        if (snapshot.connectionState == ConnectionState.waiting) {
+          return const Center(child: CircularProgressIndicator());
+        }
+        if (snapshot.hasError) {
+          return Center(child: Text('Error: ${snapshot.error}'));
+        }
+        
+        final docs = snapshot.data?.docs ?? [];
+        
+        if (docs.isEmpty) {
+          return const Center(
+            child: Text(
+              'No Live hits found yet.\nStart checking to see history!',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: Colors.grey),
+            ),
+          );
+        }
+
+        return ListView.builder(
+          padding: const EdgeInsets.all(16),
+          itemCount: docs.length,
+          itemBuilder: (context, index) {
+            final data = docs[index].data() as Map<String, dynamic>;
+            final cardData = data['cardData'] ?? 'Unknown';
+            final message = data['message'] ?? '';
+            final checkedAt = (data['checkedAt'] as Timestamp?)?.toDate();
+            
+            return Card(
+              color: const Color(0xFF2C2C2C),
+              margin: const EdgeInsets.only(bottom: 8),
+              child: ListTile(
+                leading: const Icon(Icons.star, color: Colors.greenAccent),
+                title: Text(cardData, style: const TextStyle(fontFamily: 'monospace')),
+                subtitle: Text(message),
+                trailing: Text(
+                  checkedAt != null 
+                    ? '${checkedAt.month}/${checkedAt.day} ${checkedAt.hour}:${checkedAt.minute.toString().padLeft(2, '0')}'
+                    : '',
+                  style: const TextStyle(color: Colors.grey, fontSize: 12),
+                ),
+              ),
+            );
+          },
+        );
+      },
     );
   }
 }
