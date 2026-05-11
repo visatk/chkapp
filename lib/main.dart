@@ -1,9 +1,11 @@
 import 'dart:async';
-import 'dart:math';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:firebase_core/firebase_core.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:http/http.dart' as http;
 
 import 'firebase_options.dart';
 
@@ -14,7 +16,7 @@ void main() async {
       options: DefaultFirebaseOptions.currentPlatform,
     );
   } catch (e) {
-    debugPrint('Firebase init error (ignoring for sandbox): $e');
+    debugPrint('Firebase init error: $e');
   }
   runApp(const MockCheckerApp());
 }
@@ -93,31 +95,24 @@ class LoginScreen extends StatefulWidget {
 }
 
 class _LoginScreenState extends State<LoginScreen> {
-  final _emailController = TextEditingController(text: 'sandbox@example.com');
-  final _passwordController = TextEditingController(text: 'password123');
   bool _isLoading = false;
 
-  Future<void> _login() async {
+  Future<void> _signInWithGoogle() async {
     setState(() => _isLoading = true);
     try {
-      await FirebaseAuth.instance.signInWithEmailAndPassword(
-        email: _emailController.text.trim(),
-        password: _passwordController.text.trim(),
-      );
-    } on FirebaseAuthException catch (e) {
-      if (e.code == 'user-not-found' || e.code == 'invalid-credential') {
-        // Auto-register for sandbox purposes
-        try {
-          await FirebaseAuth.instance.createUserWithEmailAndPassword(
-            email: _emailController.text.trim(),
-            password: _passwordController.text.trim(),
-          );
-        } catch (registerError) {
-          _showError(registerError.toString());
-        }
-      } else {
-        _showError(e.message ?? 'Authentication failed');
+      final GoogleSignInAccount? googleUser = await GoogleSignIn().signIn();
+      if (googleUser == null) {
+        setState(() => _isLoading = false);
+        return;
       }
+
+      final GoogleSignInAuthentication googleAuth = await googleUser.authentication;
+      final OAuthCredential credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+
+      await FirebaseAuth.instance.signInWithCredential(credential);
     } catch (e) {
       _showError(e.toString());
     } finally {
@@ -144,32 +139,25 @@ class _LoginScreenState extends State<LoginScreen> {
                 const Icon(Icons.security, size: 80, color: Colors.blueAccent),
                 const SizedBox(height: 24),
                 const Text(
-                  'Sandbox Checker Login',
+                  'Edge Checker Login',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold),
                 ),
                 const SizedBox(height: 32),
-                TextField(
-                  controller: _emailController,
-                  decoration: const InputDecoration(labelText: 'Email', prefixIcon: Icon(Icons.email)),
-                  keyboardType: TextInputType.emailAddress,
-                ),
-                const SizedBox(height: 16),
-                TextField(
-                  controller: _passwordController,
-                  decoration: const InputDecoration(labelText: 'Password', prefixIcon: Icon(Icons.lock)),
-                  obscureText: true,
-                ),
-                const SizedBox(height: 32),
-                ElevatedButton(
-                  onPressed: _isLoading ? null : _login,
-                  child: _isLoading 
+                ElevatedButton.icon(
+                  icon: _isLoading 
                     ? const SizedBox(height: 20, width: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
-                    : const Text('Access Dashboard'),
+                    : const Icon(Icons.login),
+                  label: const Text('Sign in with Google'),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.white,
+                    foregroundColor: Colors.black87,
+                  ),
+                  onPressed: _isLoading ? null : _signInWithGoogle,
                 ),
                 const SizedBox(height: 16),
                 const Text(
-                  'Using a sandbox account will automatically create it if it does not exist.',
+                  'Secure OAuth 2.0 Identity Verification via Google Identity Platform.',
                   textAlign: TextAlign.center,
                   style: TextStyle(color: Colors.grey, fontSize: 12),
                 )
@@ -204,11 +192,14 @@ class _MainDashboardState extends State<MainDashboard> {
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Mock Card Checker Pro'),
+        title: const Text('Edge Checker Pro'),
         actions: [
           IconButton(
             icon: const Icon(Icons.logout),
-            onPressed: () => FirebaseAuth.instance.signOut(),
+            onPressed: () async {
+              await GoogleSignIn().signOut();
+              await FirebaseAuth.instance.signOut();
+            },
           )
         ],
       ),
@@ -229,7 +220,7 @@ class _MainDashboardState extends State<MainDashboard> {
 }
 
 // -----------------------------------------------------------------------------
-// MODELS & MOCK API
+// MODELS & CLOUDFLARE API
 // -----------------------------------------------------------------------------
 enum CardStatus { live, dead, unknown }
 
@@ -247,42 +238,63 @@ class CardResult {
   });
 }
 
-class MockCheckerAPI {
-  static final Random _rnd = Random();
+class CloudflareCheckerAPI {
+  // IMPORTANT: 
+  // For local testing use: 'http://127.0.0.1:8787'
+  // For production use: 'https://checker-api.<YOUR-WORKER-SUBDOMAIN>.workers.dev'
+  static const String baseUrl = 'http://127.0.0.1:8787'; 
+  
+  static const String workerUrl = '$baseUrl/api/check';
+  static const String resetUrl = '$baseUrl/api/auth/reset';
 
-  // Simulates an API call to a card checking gateway
+  // Explicitly call the login endpoint on the worker to force a fresh session
+  static Future<bool> resetSession() async {
+    try {
+      final response = await http.post(Uri.parse(resetUrl));
+      return response.statusCode == 200;
+    } catch (e) {
+      debugPrint('Failed to reset session: $e');
+      return false;
+    }
+  }
+
   static Future<CardResult> checkCard(String cardData) async {
-    // Artificial delay between 300ms and 1500ms
-    int delay = 300 + _rnd.nextInt(1200);
-    await Future.delayed(Duration(milliseconds: delay));
+    try {
+      final response = await http.post(
+        Uri.parse(workerUrl),
+        headers: {'Content-Type': 'application/json'},
+        body: jsonEncode({'cclist': cardData}),
+      );
 
-    // Basic format validation simulation
-    if (cardData.length < 10) {
-      return CardResult(cardData: cardData, status: CardStatus.unknown, message: 'Invalid Format', checkedAt: DateTime.now());
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body);
+        
+        CardStatus status = CardStatus.unknown;
+        if (data['status'] == 'live') status = CardStatus.live;
+        if (data['status'] == 'dead') status = CardStatus.dead;
+
+        return CardResult(
+          cardData: cardData,
+          status: status,
+          message: data['message'] ?? 'No message',
+          checkedAt: DateTime.now(),
+        );
+      } else {
+        return CardResult(
+          cardData: cardData,
+          status: CardStatus.unknown,
+          message: 'API Error: ${response.statusCode} - ${response.body}',
+          checkedAt: DateTime.now(),
+        );
+      }
+    } catch (e) {
+      return CardResult(
+        cardData: cardData,
+        status: CardStatus.unknown,
+        message: 'Network Error: $e',
+        checkedAt: DateTime.now(),
+      );
     }
-
-    // Determine status (20% Live, 75% Dead, 5% Unknown for realism)
-    int chance = _rnd.nextInt(100);
-    CardStatus status;
-    String message;
-
-    if (chance < 20) {
-      status = CardStatus.live;
-      message = 'Approved - CVV Match';
-    } else if (chance < 95) {
-      status = CardStatus.dead;
-      message = 'Declined - Insufficient Funds / Generic Decline';
-    } else {
-      status = CardStatus.unknown;
-      message = 'Gateway Error / Timeout';
-    }
-
-    return CardResult(
-      cardData: cardData,
-      status: status,
-      message: message,
-      checkedAt: DateTime.now(),
-    );
   }
 }
 
@@ -300,6 +312,7 @@ class _CheckerScreenState extends State<CheckerScreen> {
   final TextEditingController _inputController = TextEditingController();
   
   bool _isRunning = false;
+  bool _isResetting = false;
   int _total = 0;
   int _checked = 0;
   int _live = 0;
@@ -314,6 +327,20 @@ class _CheckerScreenState extends State<CheckerScreen> {
     _inputController.dispose();
     _cancellationToken?.cancel();
     super.dispose();
+  }
+
+  Future<void> _resetWorkerSession() async {
+    setState(() => _isResetting = true);
+    final success = await CloudflareCheckerAPI.resetSession();
+    if (mounted) {
+      setState(() => _isResetting = false);
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(success ? 'Session refreshed successfully' : 'Failed to refresh session'),
+          backgroundColor: success ? Colors.green : Colors.red,
+        ),
+      );
+    }
   }
 
   void _startChecker() async {
@@ -336,21 +363,23 @@ class _CheckerScreenState extends State<CheckerScreen> {
       _cancellationToken = CancellationToken();
     });
 
+    // Force a fresh session before starting a bulk batch to minimize failures
+    await CloudflareCheckerAPI.resetSession();
+
     final User? user = FirebaseAuth.instance.currentUser;
 
     for (int i = 0; i < lines.length; i++) {
       if (_cancellationToken!.isCancelled) break;
 
-      final result = await MockCheckerAPI.checkCard(lines[i]);
+      final result = await CloudflareCheckerAPI.checkCard(lines[i]);
       
       if (!mounted) return;
 
       setState(() {
         _checked++;
-        _results.insert(0, result); // Add to top of list
+        _results.insert(0, result);
         if (result.status == CardStatus.live) {
           _live++;
-          // Save live hits to Firestore
           if (user != null) {
             FirebaseFirestore.instance.collection('users').doc(user.uid).collection('hits').add({
               'cardData': result.cardData,
@@ -364,6 +393,8 @@ class _CheckerScreenState extends State<CheckerScreen> {
           _unknown++;
         }
       });
+      // 500ms delay to respect upstream rate limits and prevent session drops
+      await Future.delayed(const Duration(milliseconds: 500));
     }
 
     if (mounted) {
@@ -408,6 +439,7 @@ class _CheckerScreenState extends State<CheckerScreen> {
           Row(
             children: [
               Expanded(
+                flex: 2,
                 child: ElevatedButton.icon(
                   icon: Icon(_isRunning ? Icons.stop : Icons.play_arrow),
                   label: Text(_isRunning ? 'Stop' : 'Start Checker'),
@@ -417,18 +449,34 @@ class _CheckerScreenState extends State<CheckerScreen> {
                   onPressed: _isRunning ? _stopChecker : _startChecker,
                 ),
               ),
-              const SizedBox(width: 16),
-              OutlinedButton.icon(
-                icon: const Icon(Icons.clear),
-                label: const Text('Clear'),
-                onPressed: _isRunning ? null : () {
-                  _inputController.clear();
-                  setState(() {
-                    _results.clear();
-                    _total = _checked = _live = _dead = _unknown = 0;
-                  });
-                },
-              )
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 1,
+                child: OutlinedButton.icon(
+                  icon: _isResetting 
+                    ? const SizedBox(width: 16, height: 16, child: CircularProgressIndicator(strokeWidth: 2)) 
+                    : const Icon(Icons.refresh),
+                  label: const Text('Reset', style: TextStyle(fontSize: 12)),
+                  onPressed: (_isRunning || _isResetting) ? null : _resetWorkerSession,
+                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                flex: 1,
+                child: OutlinedButton.icon(
+                  icon: const Icon(Icons.clear),
+                  label: const Text('Clear', style: TextStyle(fontSize: 12)),
+                  onPressed: _isRunning ? null : () {
+                    _inputController.clear();
+                    setState(() {
+                      _results.clear();
+                      _total = _checked = _live = _dead = _unknown = 0;
+                    });
+                  },
+                  style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 16)),
+                )
+              ),
             ],
           ),
           const SizedBox(height: 24),
